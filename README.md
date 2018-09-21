@@ -1,12 +1,9 @@
 # inject
 --
-    import "github.com/codegangsta/inject"
+    import "github.com/snuk/inject"
 
 Package inject provides utilities for mapping and injecting dependencies in
 various ways.
-
-Language Translations:
-* [简体中文](translations/README_zh_cn.md)
 
 ## Usage
 
@@ -88,6 +85,9 @@ type TypeMapper interface {
 	// Returns the Value that is mapped to the current type. Returns a zeroed Value if
 	// the Type has not been mapped.
 	Get(reflect.Type) reflect.Value
+	// Returns all the Values that are mapped to the current interface. Returns an empty slice if
+	// the Type has not been mapped.
+	GetAll(reflect.Type) []reflect.Value
 }
 ```
 
