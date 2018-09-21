@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/tsaikd/inject"
+	"github.com/snuk/inject"
 )
 
 type SpecialString interface {

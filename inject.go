@@ -52,12 +52,19 @@ type TypeMapper interface {
 	// Returns the Value that is mapped to the current type. Returns a zeroed Value if
 	// the Type has not been mapped.
 	Get(reflect.Type) reflect.Value
+	// Returns all the Values that are mapped to the current interface. Returns an empty slice if
+	// the Type has not been mapped.
+	GetAll(reflect.Type) []reflect.Value
+}
+
+type instance struct {
+	tp reflect.Type
+	vl reflect.Value
 }
 
 type injector struct {
-	values    map[reflect.Type]reflect.Value
-	providers map[reflect.Type]reflect.Value
-	parent    Injector
+	values []instance
+	parent Injector
 }
 
 // InterfaceOf dereferences a pointer to an Interface type.
@@ -70,7 +77,7 @@ func InterfaceOf(value interface{}) reflect.Type {
 	}
 
 	if t.Kind() != reflect.Interface {
-		panic("Called inject.InterfaceOf with a value that is not a pointer to an interface. (*MyInterface)(nil)")
+		panic("called inject.InterfaceOf with a value that is not a pointer to an interface. (*MyInterface)(nil)")
 	}
 
 	return t
@@ -79,8 +86,7 @@ func InterfaceOf(value interface{}) reflect.Type {
 // New returns a new Injector.
 func New() Injector {
 	return &injector{
-		values:    make(map[reflect.Type]reflect.Value),
-		providers: make(map[reflect.Type]reflect.Value),
+		values: make([]instance, 0),
 	}
 }
 
@@ -97,7 +103,7 @@ func (inj *injector) Invoke(f interface{}) ([]reflect.Value, error) {
 		argType := t.In(i)
 		val := inj.Get(argType)
 		if !val.IsValid() {
-			return nil, fmt.Errorf("Value not found for type %v", argType)
+			return nil, fmt.Errorf("value not found for type %v", argType)
 		}
 
 		in[i] = val
@@ -129,12 +135,11 @@ func (inj *injector) Apply(val interface{}) error {
 			ft := f.Type()
 			v := inj.Get(ft)
 			if !v.IsValid() {
-				return fmt.Errorf("Value not found for type %v", ft)
+				return fmt.Errorf("value not found for type %v", ft)
 			}
 
 			f.Set(v)
 		}
-
 	}
 
 	return nil
@@ -143,25 +148,28 @@ func (inj *injector) Apply(val interface{}) error {
 // Maps the concrete value of val to its dynamic type using reflect.TypeOf,
 // It returns the TypeMapper registered in.
 func (i *injector) Map(val interface{}) TypeMapper {
-	i.values[reflect.TypeOf(val)] = reflect.ValueOf(val)
+	i.values = append(i.values, instance{reflect.TypeOf(val), reflect.ValueOf(val)})
 	return i
 }
 
 func (i *injector) MapTo(val interface{}, ifacePtr interface{}) TypeMapper {
-	i.values[InterfaceOf(ifacePtr)] = reflect.ValueOf(val)
+	i.values = append(i.values, instance{InterfaceOf(ifacePtr), reflect.ValueOf(val)})
 	return i
 }
 
 // Provide the dynamic type of provider returns,
 // It returns the TypeMapper registered in.
 func (inj *injector) Provide(provider interface{}) TypeMapper {
-	val := reflect.ValueOf(provider)
-	t := val.Type()
-	numout := t.NumOut()
-	for i := 0; i < numout; i++ {
-		out := t.Out(i)
-		inj.providers[out] = val
+	results, err := inj.Invoke(reflect.ValueOf(provider).Interface())
+	if err != nil {
+		panic(err)
 	}
+
+	for _, result := range results {
+		resultType := result.Type()
+		inj.values = append(inj.values, instance{resultType, result})
+	}
+
 	return inj
 }
 
@@ -169,58 +177,58 @@ func (inj *injector) Provide(provider interface{}) TypeMapper {
 // the Typemapper the mapping has been registered in.
 // It panics if invoke provider failed.
 func (i *injector) Set(typ reflect.Type, val reflect.Value) TypeMapper {
-	i.values[typ] = val
+	i.values = append(i.values, instance{typ, val})
 	return i
 }
 
 func (i *injector) Get(t reflect.Type) reflect.Value {
-	val := i.values[t]
-
-	if val.IsValid() {
-		return val
-	}
-
-	// try to find providers
-	if provider, ok := i.providers[t]; ok {
-		// invoke provider to inject return values
-		results, err := i.Invoke(provider.Interface())
-		if err != nil {
-			panic(err)
-		}
-		for _, result := range results {
-			resultType := result.Type()
-
-			i.values[resultType] = result
-
-			// provider should not be called again
-			delete(i.providers, resultType)
-
-			if resultType == t {
-				val = result
-			}
-		}
-		if val.IsValid() {
-			return val
+	for _, inst := range i.values {
+		if inst.tp == t && inst.vl.IsValid() {
+			return inst.vl
 		}
 	}
 
 	// no concrete types found, try to find implementors
 	// if t is an interface
 	if t.Kind() == reflect.Interface {
-		for k, v := range i.values {
-			if k.Implements(t) && v.IsValid() {
-				return v
+		for _, inst := range i.values {
+			if inst.tp.Implements(t) && inst.vl.IsValid() {
+				return inst.vl
 			}
 		}
 	}
 
 	// Still no type found, try to look it up on the parent
 	if i.parent != nil {
-		val = i.parent.Get(t)
+		return i.parent.Get(t)
 	}
 
-	return val
+	panic(fmt.Sprint("no instance found for ", t))
+}
 
+func (i *injector) GetAll(t reflect.Type) []reflect.Value {
+	var values []reflect.Value
+
+	if t.Kind() != reflect.Interface {
+		panic("cannot get all implementors for non interface type")
+	}
+
+	if t.Kind() == reflect.Interface {
+		for _, inst := range i.values {
+			if inst.tp.Implements(t) && inst.vl.IsValid() {
+				values = append(values, inst.vl)
+			}
+		}
+	}
+
+	if i.parent != nil {
+		parentVals := i.parent.GetAll(t)
+		for i := range parentVals {
+			values = append(values, parentVals[i])
+		}
+	}
+
+	return values
 }
 
 func (i *injector) SetParent(parent Injector) {
